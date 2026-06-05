@@ -1,0 +1,38 @@
+# =============================================================================
+# LigandMPNN Pipeline Configuration
+# =============================================================================
+
+# --- Environment ---
+conda_profile: "/home/tedeschg/miniforge3/etc/profile.d/conda.sh"
+project_root: "/home/tedeschg/prj/protein-perturbation"
+lmpnn_path: "/software/lmpnn/LigandMPNN"
+env_dockndesign: "base"
+env_ligandmpnn: "ligandmpnn_env"
+output_dir: "output_lmpnn"
+
+# --- Residue Selection ---
+residue_selection:
+  cutoff_distance: 6.0          # Å — residues within this distance of ligand are selected
+  output_file: "selected_residues.txt"
+  min_heavy_atoms: 3            # minimum heavy atoms for ligand candidate detection
+  min_expected: 3               # warn if fewer residues selected
+  max_expected: 60              # warn if more residues selected
+  include_hetatm_residues: false  # include cofactors/modified AA in selection
+
+# --- Pose QC ---
+pose_qc:
+  enabled: true                 # set false to skip QC entirely
+  clash_dist: 1.5               # Å — hard clash threshold (element-aware)
+  bond_length_tol: 0.0          # Å — extra tolerance for diffusion outputs (e.g. 0.15)
+  strict: false                 # if true, geometry warnings also count as failure
+  out_json: true                # write per-PDB JSON QC report to <pdb_dir>/qc_report.json
+  # behaviour on clash: "warn" = continue anyway, "skip" = skip that PDB, "fail" = abort all
+  on_clash: "warn"
+
+# --- LigandMPNN ---
+ligandmpnn:
+  model_type: "ligand_mpnn"
+  checkpoint: "model_params/ligandmpnn_v_32_010_25.pt"
+  temperature: 0.1
+  seed: 42
+  number_of_batches: 1
