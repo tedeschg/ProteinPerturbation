@@ -1,5 +1,4 @@
 /data
-/output_lmpnn
-/output_scoring
-/output_TEST
+/abl
+/log_dir
 kl_*
