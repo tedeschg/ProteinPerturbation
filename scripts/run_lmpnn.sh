@@ -30,7 +30,7 @@ LMPNN_PATH="/software/lmpnn/LigandMPNN"
 python "$LMPNN_PATH/run.py" \
     --model_type "ligand_mpnn" \
     --checkpoint_ligand_mpnn "$LMPNN_PATH/model_params/ligandmpnn_v_32_010_25.pt" \
-    --pdb_path "/home/tedeschg/prj/protein-perturbation/data/abl1/abl1_dude/receptor_ligand.pdb" \
+    --pdb_path "/home/tedeschg/prj/protein-perturbation/data/abl1/crystal_structure/2hzi_clean.pdb" \
     --out_folder "/home/tedeschg/prj/protein-perturbation/output_abl/lmpnn_crystal_reference" \
     --temperature 0.05 \
     --seed 111 \

@@ -10,7 +10,17 @@ LMPNN_PATH="/software/lmpnn/LigandMPNN"
 BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_lmpnn/backbones"
 OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_scoring/"
 
+### Only for the reference ###
+#BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_abl/lmpnn_crystal_reference/backbones/2hzi_clean_11.pdb"
+#OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_abl/lmpnn_crystal_reference"
+###
+
 mkdir -p "$OUT_FOLDER"
+
+
+### Only for the reference ###
+#PDB_FILES=("$BACKBONES_DIR" )
+###
 
 PDB_FILES=("$BACKBONES_DIR"/*.pdb)
 TOTAL=${#PDB_FILES[@]}
