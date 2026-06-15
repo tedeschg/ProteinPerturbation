@@ -1,6 +1,7 @@
 /data
 /output*
 /log_dir
+/experiments
 
 kl_*
 perturbation*
