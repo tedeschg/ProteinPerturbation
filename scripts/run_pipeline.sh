@@ -9,8 +9,8 @@
 #
 # PIPELINE STEPS
 # --------------
-#   1. Pose QC        – clash + geometry check  (scripts/pose_qc.py)
-#   2. Residue Selection – ligand-centric interface residues (scripts/select_residues.py)
+#   1. Pose QC        – clash + geometry check  (pose_qc.py)
+#   2. Residue Selection – ligand-centric interface residues (select_residues.py)
 #   3. LigandMPNN     – sequence design in batch mode
 #   4. Final Report   – summary table printed to terminal + written to TSV
 #
@@ -208,7 +208,7 @@ for pdb in "${VALID_PDBS[@]}"; do
     log "  [$PDB_BASENAME] Running pose_qc.py..."
 
     set +e
-    QC_OUTPUT=$(python "$PROJECT_ROOT/scripts/pose_qc.py" "${QC_ARGS[@]}" 2>&1)
+    QC_OUTPUT=$(python "$PROJECT_ROOT/pose_qc.py" "${QC_ARGS[@]}" 2>&1)
     QC_EXIT=$?
     set -e
 
@@ -291,7 +291,7 @@ for pdb in "${ACTIVE_PDBS[@]}"; do
     log "  [$PDB_BASENAME] Selecting residues (dist=${CUTOFF_DISTANCE} Å)..."
 
     set +e
-    SEL_OUTPUT=$(python "$PROJECT_ROOT/scripts/select_residues.py" "${SEL_ARGS[@]}" 2>&1)
+    SEL_OUTPUT=$(python "$PROJECT_ROOT/select_residues.py" "${SEL_ARGS[@]}" 2>&1)
     SEL_EXIT=$?
     set -e
 

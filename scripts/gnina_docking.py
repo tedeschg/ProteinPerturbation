@@ -228,27 +228,6 @@ def parse_gnina_results(output_sdf: Path) -> List[dict]:
     return poses
 
 
-def check_score_consistency(best_pose: dict, threshold: float = 3.0) -> Tuple[bool, float]:
-    """
-    Check if CNNaffinity and minimizedAffinity are consistent for the best pose.
-
-    GNINA v1.1 writes CNNaffinity with a POSITIVE sign in the SDF
-    (e.g. +6.17 means -6.17 kcal/mol physically). We negate it before
-    comparing with minimizedAffinity, which is already negative.
-
-    Returns (is_inconsistent, gap) where:
-      gap = |-CNNaffinity - minimizedAffinity|
-      is_inconsistent = True if gap > threshold  ->  redo docking
-    """
-    cnn_aff = best_pose.get("CNNaffinity")
-    min_aff = best_pose.get("minimizedAffinity")
-    if cnn_aff is None or min_aff is None:
-        return False, 0.0
-    # Negate CNNaffinity to convert to physical kcal/mol (GNINA v1.1 convention)
-    gap = abs(-cnn_aff - min_aff)
-    return gap > threshold, gap
-
-
 def print_pose_table(poses: List[dict], best_idx: int,
                      log: logging.Logger = None) -> None:
     """Print a formatted table of all poses, marking the best one."""
@@ -303,8 +282,6 @@ Examples:
     parser.add_argument("--num_modes",            type=int,   default=9)
     parser.add_argument("--cpu",                  type=int,   default=1,
                         help="Number of CPU cores to use (default: 1)")
-    parser.add_argument("--consistency_threshold", type=float, default=3.0,
-                        help="|CNNaffinity - minimizedAffinity| threshold to trigger redo (default: 3.0 kcal/mol)")
     parser.add_argument("--keep_temp",            action="store_true")
 
     args = parser.parse_args()
@@ -332,7 +309,6 @@ Examples:
     log.info(f"Exhaustiveness (redo): {args.exhaustiveness_redo}")
     log.info(f"Poses per ligand:      {args.num_modes}")
     log.info(f"CPUs:                  {args.cpu}")
-    log.info(f"Consistency threshold: {args.consistency_threshold} kcal/mol")
     log.info(f"Log file:              {args.output_dir / 'docking.log'}")
     log.info("=" * 60)
 
@@ -433,55 +409,6 @@ Examples:
         best = max(poses, key=lambda p: p["CNNscore"] if p["CNNscore"] is not None else -999)
         print_pose_table(poses, best["pose"], log)
 
-        # ── Consistency check ─────────────────────────────────────────────
-        inconsistent, gap = check_score_consistency(best, args.consistency_threshold)
-
-        if inconsistent:
-            log.warning("")
-            log.warning(f"  !! INCONSISTENCY DETECTED for {name} !!")
-            log.warning(f"     CNNaffinity (raw SDF)    = {best['CNNaffinity']:+.3f}  (GNINA v1.1: stored positive)")
-            log.warning(f"     CNNaffinity (physical)   = {-best['CNNaffinity']:+.3f} kcal/mol")
-            log.warning(f"     minimizedAffinity        = {best['minimizedAffinity']:+.3f} kcal/mol")
-            log.warning(f"     |gap|                    = {gap:.3f} kcal/mol  (threshold: {args.consistency_threshold})")
-            log.warning(f"     -> Deleting result and redoing with exhaustiveness={args.exhaustiveness_redo}...")
-
-            output_sdf.unlink(missing_ok=True)
-            redo_list.append(name)
-
-            # ── Redo with higher exhaustiveness ───────────────────────────
-            success_redo = run_gnina(
-                args.protein, ligand_path, reference_sdf, output_sdf,
-                args.autobox_add, args.exhaustiveness_redo, args.num_modes,
-                args.cpu, log
-            )
-
-            if not success_redo:
-                log.warning("  ✗ Redo also failed.")
-                results.append((name, "FAILED", "redo failed", None))
-                continue
-
-            poses = parse_gnina_results(output_sdf)
-            if not poses:
-                log.warning("  ✗ No poses after redo.")
-                results.append((name, "FAILED", "no poses after redo", None))
-                continue
-
-            best = max(poses, key=lambda p: p["CNNscore"] if p["CNNscore"] is not None else -999)
-            log.info("  Results after redo:")
-            print_pose_table(poses, best["pose"], log)
-
-            _, gap_redo = check_score_consistency(best, args.consistency_threshold)
-            if gap_redo > args.consistency_threshold:
-                log.warning(f"  !! Still inconsistent after redo (gap={gap_redo:.3f}) — keeping result anyway.")
-            else:
-                log.info(f"  ✓ Consistency restored after redo (gap={gap_redo:.3f})")
-        else:
-            log.info(f"\n  ✓ Scores consistent (|CNNaffinity - minimizedAffinity| = {gap:.3f} kcal/mol)")
-
-        log.info(f"\n  ★ Best pose: {best['pose']}"
-                 f"  |  CNNscore={best['CNNscore']:.4f}"
-                 f"  |  CNNaffinity={best['CNNaffinity']:+.3f}"
-                 f"  |  minimizedAffinity={best['minimizedAffinity']:+.3f}")
 
         results.append((name, "SUCCESS", str(output_sdf), best))
         all_best_poses.append({
