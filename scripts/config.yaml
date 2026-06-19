@@ -8,25 +8,28 @@ project_root: "/home/tedeschg/prj/protein-perturbation"
 lmpnn_path: "/software/lmpnn/LigandMPNN"
 env_dockndesign: "base"
 env_ligandmpnn: "ligandmpnn_env"
-output_dir: "output_cdk2_lmpnn_reference"
+output_dir: "output_abl1_lmpnn_focused"
 
-# --- Residue Selection ---
-residue_selection:
-  cutoff_distance: 6.0          # Å — residues within this distance of ligand are selected
+# --- Residue selection (docking‑box based) ---
+residues_selection:
+  # Path to the reference complex (PDB) that contains the ligand
+  reference_complex: "/home/tedeschg/prj/protein-perturbation/data/abl1/crystal_structure/2hzi_clean.pdb"
+  # Docking box padding (Å), same as used in GNINA
+  autobox_add: 8.0
+  # Output file name (inside each PDB's subdirectory)
   output_file: "selected_residues.txt"
-  min_heavy_atoms: 3            # minimum heavy atoms for ligand candidate detection
-  min_expected: 3               # warn if fewer residues selected
-  max_expected: 60              # warn if more residues selected
-  include_hetatm_residues: false  # include cofactors/modified AA in selection
+  # Format: list, space_separated, or json
+  output_format: "space_separated"
+  # Include HETATM residues (e.g. waters, other ligands) in the selection?
+  include_hetatm_residues: false
 
 # --- Pose QC ---
 pose_qc:
-  enabled: true                 # set false to skip QC entirely
-  clash_dist: 1.5               # Å — hard clash threshold (element-aware)
-  bond_length_tol: 0.0          # Å — extra tolerance for diffusion outputs (e.g. 0.15)
-  strict: false                 # if true, geometry warnings also count as failure
-  out_json: true                # write per-PDB JSON QC report to <pdb_dir>/qc_report.json
-  # behaviour on clash: "warn" = continue anyway, "skip" = skip that PDB, "fail" = abort all
+  enabled: true
+  clash_dist: 1.5
+  bond_length_tol: 0.0
+  strict: false
+  out_json: true
   on_clash: "warn"
 
 # --- LigandMPNN ---

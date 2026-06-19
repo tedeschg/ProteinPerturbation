@@ -1,24 +1,26 @@
 #!/bin/bash
 ###############################################################################
-# LigandMPNN Pipeline - Multi-PDB
+# LigandMPNN Pipeline - Multi-PDB (docking‑box residue selection)
 #
 # USAGE
 # -----
 #   bash run_pipeline.sh file1.pdb file2.pdb [file3.pdb ...]
 #
-#
 # PIPELINE STEPS
 # --------------
-#   1. Pose QC        – clash + geometry check  (pose_qc.py)
-#   2. Residue Selection – ligand-centric interface residues (select_residues.py)
+#   1. Pose QC        – clash + geometry check          (pose_qc.py)
+#   2. Residues Selection – docking‑box based residues   (residues_selection.py)
+#                         Uses the reference ligand to define the box center
+#                         and the `autobox_add` radius (from config.yaml).
 #   3. LigandMPNN     – sequence design in batch mode
 #   4. Final Report   – summary table printed to terminal + written to TSV
 #
 # NOTES
 # -----
-#   - Commented-out flags (e.g. --redesigned_residues_multi) are intentional
-#     placeholders; do not uncomment unless the corresponding feature is needed.
-#   - Re-running the script on the same output_dir will overwrite previous results.
+#   - The residues selection step extracts all residues that fall within
+#     the GNINA‑style docking box (sphere of radius `autobox_add` around
+#     the ligand).
+#   - Re-running the script on the same output_dir will overwrite results.
 ###############################################################################
 
 set -euo pipefail
@@ -43,7 +45,7 @@ print_banner() {
 }
 
 # ---------------------------------------------------------------------------
-# YAML parsing
+# YAML parsing (FIXED: robust nested key reading)
 # ---------------------------------------------------------------------------
 
 # Read a top-level scalar value: read_yaml "key"
@@ -59,16 +61,24 @@ read_yaml() {
 }
 
 # Read a scalar nested one level deep: read_yaml_nested "section" "key"
+# FIXED: more robust parsing with awk
 read_yaml_nested() {
     local section="$1"
     local key="$2"
-    awk "/^${section}:/{found=1; next} found && /^[^ ]/{found=0} found && /^[[:space:]]+${key}:/{print}" \
-        "$CONFIG_FILE" \
-        | sed "s/.*${key}:[[:space:]]*//" \
-        | sed 's/#.*//' \
-        | sed 's/[[:space:]]*$//' \
-        | sed 's/"//g' \
-        | sed "s/'//g"
+    awk -v s="$section" -v k="$key" '
+        $0 ~ "^" s ":" { in_section=1; next }
+        in_section && /^[^ ]/ { in_section=0 }
+        in_section && $0 ~ "^[[:space:]]+" k ":" {
+            # Estrai il valore: rimuovi spazi, la chiave, i due punti,
+            # commenti finali e virgolette
+            sub("^[[:space:]]*" k ":[[:space:]]*", "")
+            sub("[[:space:]]*#.*$", "")
+            gsub(/^"|"$/, "")
+            gsub(/^'"'"'|'"'"'$/, "")
+            print
+            exit
+        }
+    ' "$CONFIG_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -87,13 +97,40 @@ ENV_DOCKNDESIGN=$(read_yaml "env_dockndesign")
 ENV_LIGANDMPNN=$(read_yaml "env_ligandmpnn")
 BASE_OUTPUT_DIR=$(read_yaml "output_dir")
 
-# residue_selection
-CUTOFF_DISTANCE=$(read_yaml_nested "residue_selection" "cutoff_distance")
-RESIDUE_OUTPUT_FILE=$(read_yaml_nested "residue_selection" "output_file")
-SEL_MIN_HEAVY=$(read_yaml_nested "residue_selection" "min_heavy_atoms")
-SEL_MIN_EXPECTED=$(read_yaml_nested "residue_selection" "min_expected")
-SEL_MAX_EXPECTED=$(read_yaml_nested "residue_selection" "max_expected")
-SEL_INCLUDE_HETATM=$(read_yaml_nested "residue_selection" "include_hetatm_residues")
+# residues_selection (NEW: docking‑box based)
+RESIDUE_OUTPUT_FILE=$(read_yaml_nested "residues_selection" "output_file")
+REF_COMPLEX_RAW=$(read_yaml_nested "residues_selection" "reference_complex")
+AUTOBOX_ADD=$(read_yaml_nested "residues_selection" "autobox_add")
+OUT_FORMAT=$(read_yaml_nested "residues_selection" "output_format")
+INCL_HETATM=$(read_yaml_nested "residues_selection" "include_hetatm_residues")
+
+# Fallback per valori mancanti
+if [ -z "$AUTOBOX_ADD" ]; then
+    log_warn "autobox_add not found in config, using default 8.0"
+    AUTOBOX_ADD=8.0
+fi
+if [ -z "$OUT_FORMAT" ]; then
+    OUT_FORMAT="space_separated"
+fi
+if [ -z "$INCL_HETATM" ]; then
+    INCL_HETATM="false"
+fi
+if [ -z "$REF_COMPLEX_RAW" ]; then
+    log_err "reference_complex not defined in config.yaml under residues_selection"
+    exit 1
+fi
+
+# Rendi il percorso assoluto se relativo
+if [[ ! "$REF_COMPLEX_RAW" = /* ]]; then
+    REF_COMPLEX="$PROJECT_ROOT/$REF_COMPLEX_RAW"
+else
+    REF_COMPLEX="$REF_COMPLEX_RAW"
+fi
+
+if [ ! -f "$REF_COMPLEX" ]; then
+    log_err "Reference complex file not found: $REF_COMPLEX"
+    exit 1
+fi
 
 # pose_qc
 QC_ENABLED=$(read_yaml_nested "pose_qc" "enabled")
@@ -145,19 +182,16 @@ mkdir -p "$BASE_OUTPUT_DIR"
 # Tracking arrays for final report
 # ---------------------------------------------------------------------------
 
-declare -A PDB_QC_STATUS        # pass / warn_clash / qc_crashed / skipped
+declare -A PDB_QC_STATUS
 declare -A PDB_QC_N_CLASHES
 declare -A PDB_QC_N_GEOM
 declare -A PDB_RESIDUES_MAP
 declare -A PDB_N_POSITIONS
-declare -A PDB_SEL_STATUS       # ok / warn_clash / error
-
-# Use associative array as a set to prevent duplicate entries in SKIPPED_PDBS
+declare -A PDB_SEL_STATUS
 declare -A SKIPPED_SET
 SKIPPED_PDBS=()
 ACTIVE_PDBS=()
 
-# Mark a PDB as skipped (deduplicates automatically)
 mark_skipped() {
     local pdb="$1"
     if [ -z "${SKIPPED_SET[$pdb]+_}" ]; then
@@ -196,7 +230,6 @@ for pdb in "${VALID_PDBS[@]}"; do
         continue
     fi
 
-    # Build pose_qc.py argument list
     QC_ARGS=(
         --pdb "$pdb"
         --clash_dist "$QC_CLASH_DIST"
@@ -212,7 +245,6 @@ for pdb in "${VALID_PDBS[@]}"; do
     QC_EXIT=$?
     set -e
 
-    # Parse clash/geometry counts from output; default to 0 if not found
     N_CLASHES=$(echo "$QC_OUTPUT" | { grep -oP 'Clashes:\s+\K[0-9]+' || true; } | head -1)
     N_GEOM=$(echo "$QC_OUTPUT"    | { grep -oP 'Geometry issues:\s+\K[0-9]+' || true; } | head -1)
     N_CLASHES="${N_CLASHES:-0}"
@@ -224,12 +256,9 @@ for pdb in "${VALID_PDBS[@]}"; do
         log "  [$PDB_BASENAME] QC PASS"
         PDB_QC_STATUS["$pdb"]="pass"
         ACTIVE_PDBS+=("$pdb")
-
     elif [ "$QC_EXIT" -eq 1 ]; then
-        # Hard QC failure (clash or strict geometry violation)
         log_warn "[$PDB_BASENAME] QC FAIL (clashes=${N_CLASHES}, geom=${N_GEOM})"
         echo "$QC_OUTPUT" | { grep -E "\[FAIL\]|\[WARN\]" || true; } | sed 's/^/    /'
-
         case "$QC_ON_CLASH" in
             fail)
                 log_err "on_clash=fail -- aborting pipeline."
@@ -246,12 +275,9 @@ for pdb in "${VALID_PDBS[@]}"; do
                 ACTIVE_PDBS+=("$pdb")
                 ;;
         esac
-
     else
-        # pose_qc.py crashed (Python exception, missing dependencies, etc.)
-        log_warn "[$PDB_BASENAME] pose_qc.py crashed (exit=$QC_EXIT). Output:"
+        log_warn "[$PDB_BASENAME] pose_qc.py crashed (exit=$QC_EXIT). Continuing without QC."
         echo "$QC_OUTPUT" | sed 's/^/    /'
-        log_warn "[$PDB_BASENAME] Continuing without QC validation."
         PDB_QC_STATUS["$pdb"]="qc_crashed"
         ACTIVE_PDBS+=("$pdb")
     fi
@@ -265,11 +291,11 @@ fi
 log "  QC done: ${#ACTIVE_PDBS[@]} active, ${#SKIPPED_PDBS[@]} skipped."
 
 ###############################################################################
-# STEP 2: Residue Selection
+# STEP 2: Residue Selection (NEW: docking‑box based)
 ###############################################################################
 echo ""
 echo "----------------------------------------------"
-log "[2/3] Residue Selection"
+log "[2/3] Residue Selection (docking box)"
 echo "----------------------------------------------"
 
 for pdb in "${ACTIVE_PDBS[@]}"; do
@@ -278,49 +304,40 @@ for pdb in "${ACTIVE_PDBS[@]}"; do
     SELECTED_RESIDUES_FILE="$PDB_DIR/$RESIDUE_OUTPUT_FILE"
 
     SEL_ARGS=(
-        --pdb "$pdb"
-        --dist "$CUTOFF_DISTANCE"
-        --out "$SELECTED_RESIDUES_FILE"
-        --min_heavy_atoms "$SEL_MIN_HEAVY"
-        --min_expected "$SEL_MIN_EXPECTED"
-        --max_expected "$SEL_MAX_EXPECTED"
+        --protein "$pdb"
+        --reference_complex "$REF_COMPLEX"
+        --autobox_add "$AUTOBOX_ADD"
+        --output "$SELECTED_RESIDUES_FILE"
+        --format "$OUT_FORMAT"
     )
-    [ "$SEL_INCLUDE_HETATM" = "true" ] && SEL_ARGS+=(--include_hetatm_residues)
-    [ "$QC_OUT_JSON"         = "true" ] && SEL_ARGS+=(--out_json "$PDB_DIR/selection_summary.json")
+    [ "$INCL_HETATM" = "true" ] && SEL_ARGS+=(--include_hetatm)
 
-    log "  [$PDB_BASENAME] Selecting residues (dist=${CUTOFF_DISTANCE} Å)..."
+    log "  [$PDB_BASENAME] Selecting residues within box (radius=${AUTOBOX_ADD} Å)..."
 
     set +e
-    SEL_OUTPUT=$(python "$PROJECT_ROOT/select_residues.py" "${SEL_ARGS[@]}" 2>&1)
+    SEL_OUTPUT=$(python "$PROJECT_ROOT/residues_selection.py" "${SEL_ARGS[@]}" 2>&1)
     SEL_EXIT=$?
     set -e
 
-    # Always print full output so Python errors are visible
     echo "$SEL_OUTPUT" | sed 's/^/    /'
 
-    # Exit codes: 0 = clean, 1 = hard error, 2 = soft clash warning
-    if [ "$SEL_EXIT" -eq 1 ]; then
-        log_err "[$PDB_BASENAME] select_residues.py failed (exit=1). Skipping."
+    if [ "$SEL_EXIT" -ne 0 ]; then
+        log_err "[$PDB_BASENAME] residues_selection.py failed (exit=$SEL_EXIT). Skipping."
         PDB_SEL_STATUS["$pdb"]="error"
         mark_skipped "$pdb"
         continue
-    elif [ "$SEL_EXIT" -eq 2 ]; then
-        log_warn "[$PDB_BASENAME] Clash warning from residue selection -- continuing."
-        PDB_SEL_STATUS["$pdb"]="warn_clash"
     else
         PDB_SEL_STATUS["$pdb"]="ok"
     fi
 
     if [ ! -f "$SELECTED_RESIDUES_FILE" ]; then
-        log_err "[$PDB_BASENAME] $RESIDUE_OUTPUT_FILE not created despite exit=$SEL_EXIT."
-        log_err "            Check the output above for the actual Python error."
+        log_err "[$PDB_BASENAME] $RESIDUE_OUTPUT_FILE not created despite exit=0."
         PDB_SEL_STATUS["$pdb"]="error"
         mark_skipped "$pdb"
         continue
     fi
 
     RESIDUES=$(cat "$SELECTED_RESIDUES_FILE")
-    # Count non-empty whitespace-separated tokens robustly
     N_POS=$(echo "$RESIDUES" | tr -s ' \t\n' '\n' | grep -c '[^[:space:]]' || true)
     N_POS="${N_POS:-0}"
     PDB_RESIDUES_MAP["$pdb"]="$RESIDUES"
@@ -328,7 +345,7 @@ for pdb in "${ACTIVE_PDBS[@]}"; do
     log "  [$PDB_BASENAME] Selected $N_POS positions."
 done
 
-# Rebuild ACTIVE_PDBS excluding any that failed selection
+# Ricostruisci ACTIVE_PDBS escludendo quelli saltati
 ACTIVE_PDBS_NEW=()
 for pdb in "${ACTIVE_PDBS[@]}"; do
     if [ -z "${SKIPPED_SET[$pdb]+_}" ]; then
@@ -342,12 +359,10 @@ if [ ${#ACTIVE_PDBS[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Warn if position counts differ across PDBs (may affect scoring fairness)
 UNIQUE_N_POS=$(for pdb in "${ACTIVE_PDBS[@]}"; do echo "${PDB_N_POSITIONS[$pdb]:-0}"; done | sort -u)
 N_UNIQUE=$(echo "$UNIQUE_N_POS" | grep -c '[^[:space:]]' || true)
 if [ "${N_UNIQUE:-1}" -gt 1 ]; then
     log_warn "n_positions_used differs across PDBs: $(echo "$UNIQUE_N_POS" | tr '\n' ' ')"
-    log_warn "This may affect scoring fairness. Check scaffold consistency."
 else
     log "  All PDBs selected ${UNIQUE_N_POS} positions."
 fi
@@ -365,7 +380,7 @@ conda activate "$ENV_LIGANDMPNN"
 PDB_MULTI_JSON="$BASE_OUTPUT_DIR/pdb_ids.json"
 REDESIGNED_JSON="$BASE_OUTPUT_DIR/redesigned_residues_multi.json"
 
-# Build pdb_path_multi JSON  {"<abs_path>": "", ...}
+# Build pdb_path_multi JSON
 {
     echo "{"
     first=true
@@ -379,7 +394,7 @@ REDESIGNED_JSON="$BASE_OUTPUT_DIR/redesigned_residues_multi.json"
     echo "}"
 } > "$PDB_MULTI_JSON"
 
-# Build redesigned_residues_multi JSON  {"<abs_path>": "<residue list>", ...}
+# Build redesigned_residues_multi JSON (usando la MAPPA)
 {
     echo "{"
     first=true
@@ -387,7 +402,8 @@ REDESIGNED_JSON="$BASE_OUTPUT_DIR/redesigned_residues_multi.json"
         [ "$first" = false ] && echo ","
         first=false
         abs_pdb=$(realpath "$pdb")
-        RESIDUES="${PDB_RESIDUES_MAP[$pdb]}"
+        RESIDUES="${PDB_RESIDUES_MAP[$pdb]:-}"
+        # Se per qualche motivo RESIDUES è vuoto, scrivi stringa vuota
         printf '  "%s": "%s"' "$abs_pdb" "$RESIDUES"
     done
     echo ""
@@ -404,9 +420,8 @@ python "$LMPNN_PATH/run.py" \
     --temperature          "$TEMPERATURE" \
     --seed                 "$SEED" \
     --number_of_batches    "$NUM_BATCHES" \
+    --redesigned_residues_multi "$REDESIGNED_JSON" \
     --save_stats 1
-
-#--redesigned_residues_multi "$REDESIGNED_JSON" \
 
 log "  LigandMPNN done."
 
@@ -420,17 +435,14 @@ echo "----------------------------------------------"
 
 REPORT_TSV="$BASE_OUTPUT_DIR/pipeline_report.tsv"
 
-# Print header
 printf "%-30s  %-12s  %-8s  %-8s  %-10s\n" \
     "PDB" "QC_STATUS" "CLASHES" "GEOM" "N_POS"
 printf "%-30s  %-12s  %-8s  %-8s  %-10s\n" \
     "------------------------------" "------------" "--------" "--------" "----------"
 
-# TSV header
 echo -e "PDB\tQC_STATUS\tCLASHES\tGEOM_ISSUES\tN_POSITIONS" > "$REPORT_TSV"
 
-# Combine active + skipped, preserving insertion order; deduplication via SKIPPED_SET
-# (SKIPPED_PDBS already has no duplicates thanks to mark_skipped)
+# Combina attivi + saltati
 ALL_PDBS=("${ACTIVE_PDBS[@]}" "${SKIPPED_PDBS[@]}")
 
 for pdb in "${ALL_PDBS[@]}"; do

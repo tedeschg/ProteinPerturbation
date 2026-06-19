@@ -45,21 +45,21 @@ import torch
 # CONFIGURATION  ← edit here
 # ──────────────────────────────────────────────────────────────────────────────
 
-SCORING_DIR = "/home/tedeschg/prj/protein-perturbation/output_cdk2_scoring"
+SCORING_DIR = "/home/tedeschg/prj/protein-perturbation/output_abl1_lmpnn_focused/scoring"
 
 # REFERENCE_PATH can be:
 #   - a single .pt file  → its replicas are averaged (mean over replica axis)
 #   - a folder of .pt files → all files are loaded and their probs are averaged together
 REFERENCE_PATH = (
-    "/home/tedeschg/prj/protein-perturbation/output_cdk2_reference/1h00_protein_fap_1.pt"
+    "/home/tedeschg/prj/protein-perturbation/experiments/output_abl1_reference/2hzi_clean_11.pt"
 )
 
 # Keywords to assign labels from filenames
 ACTIVE_KEYWORD = "active"   # label = 1
 DECOY_KEYWORD  = "decoy"    # label = 0
 
-OUT_CSV = "/home/tedeschg/prj/protein-perturbation/perturbation_scores_all_cdk2.csv"
-OUT_ROC = "/home/tedeschg/prj/protein-perturbation/roc_curve_all_cdk2.png"
+OUT_CSV = "/home/tedeschg/prj/protein-perturbation/perturbation_scores_all_abl1_focused.csv"
+OUT_ROC = "/home/tedeschg/prj/protein-perturbation/roc_curve_all_abl1_focused.png"
 
 # Bootstrap settings
 BOOTSTRAP_N_RESAMPLES = 2000   # number of bootstrap iterations for AUROC CI
