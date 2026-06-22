@@ -1,10 +1,9 @@
 /data
 /output*
-/log_dir
 /experiments
+/log*
 
 kl_*
 perturbation*
 roc*
-/log*
-/output*
+METHODS.tex
