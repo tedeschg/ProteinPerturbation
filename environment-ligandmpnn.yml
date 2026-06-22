@@ -1,0 +1,39 @@
+# =============================================================================
+# LigandMPNN runtime environment
+# =============================================================================
+# Used by:
+#   - run_pipeline.sh (STEP 3: LigandMPNN design)
+#   - run_score.sh    (LigandMPNN scoring → produces the .pt files)
+#   - run_lmpnn.sh    (legacy one-shot design script)
+#
+# Mirrors what `pip install -r requirements.txt` does inside the upstream
+# LigandMPNN repo (https://github.com/dauparas/LigandMPNN), with pinned
+# versions that are known to work for this project.
+#
+# Install:
+#   conda env create -f environment-ligandmpnn.yml
+#   conda activate ligandmpnn_env
+# =============================================================================
+name: ligandmpnn_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch==2.9.1+cpu                 # use the matching CUDA wheel if running on GPU
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - numpy==1.23.5
+      - scipy==1.12.0
+      - biopython==1.79
+      - prody==2.4.1
+      - ml-collections==0.1.1
+      - dm-tree==0.1.8
+      - filelock
+      - fsspec
+      - jinja2
+      - networkx
+      - pyyaml
+      - sympy
+      - typing-extensions

@@ -45,40 +45,23 @@ print_banner() {
 }
 
 # ---------------------------------------------------------------------------
-# YAML parsing (FIXED: robust nested key reading)
+# YAML parsing — delegated to scripts/parse_config.py (PyYAML-based)
 # ---------------------------------------------------------------------------
+# The previous grep/awk/sed parser was replaced because it broke on quoted
+# values, comments at end-of-line, and deeper nesting. The Python helper uses
+# PyYAML and supports a dotted-key path.
 
 # Read a top-level scalar value: read_yaml "key"
 read_yaml() {
     local key="$1"
-    grep "^${key}:" "$CONFIG_FILE" \
-        | sed "s/^${key}:[[:space:]]*//" \
-        | sed 's/#.*//' \
-        | sed 's/[[:space:]]*$//' \
-        | sed 's/"//g' \
-        | sed "s/'//g" \
-        | envsubst
+    python "$SCRIPT_DIR/parse_config.py" "$CONFIG_FILE" "$key"
 }
 
 # Read a scalar nested one level deep: read_yaml_nested "section" "key"
-# FIXED: more robust parsing with awk
 read_yaml_nested() {
     local section="$1"
     local key="$2"
-    awk -v s="$section" -v k="$key" '
-        $0 ~ "^" s ":" { in_section=1; next }
-        in_section && /^[^ ]/ { in_section=0 }
-        in_section && $0 ~ "^[[:space:]]+" k ":" {
-            # Estrai il valore: rimuovi spazi, la chiave, i due punti,
-            # commenti finali e virgolette
-            sub("^[[:space:]]*" k ":[[:space:]]*", "")
-            sub("[[:space:]]*#.*$", "")
-            gsub(/^"|"$/, "")
-            gsub(/^'"'"'|'"'"'$/, "")
-            print
-            exit
-        }
-    ' "$CONFIG_FILE"
+    python "$SCRIPT_DIR/parse_config.py" "$CONFIG_FILE" "${section}.${key}"
 }
 
 # ---------------------------------------------------------------------------

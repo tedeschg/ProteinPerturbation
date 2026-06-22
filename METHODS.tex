@@ -1,0 +1,429 @@
+% =============================================================================
+%  METHODS.tex
+%  Detailed methodology of the protein-perturbation virtual-screening pipeline.
+%
+%  This file is written as plain LaTeX so it can be compiled with `pdflatex`
+%  but is also fully readable in a text editor. Keep it next to README.md.
+%
+%  Compile:  pdflatex METHODS.tex
+% =============================================================================
+
+\documentclass[11pt]{article}
+
+\usepackage[a4paper, margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    columns=fullflexible,
+    breaklines=true,
+    keepspaces=true,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    framesep=4pt,
+    rulecolor=\color{gray!40},
+}
+
+\newcommand{\jsd}{\mathrm{JSD}}
+\newcommand{\kl}{D_{\mathrm{KL}}}
+\newcommand{\prob}{\mathbb{P}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Indic}{\mathbf{1}}
+
+\title{The Protein-Perturbation Score \\
+       \large A single-shot, MD-free virtual-screening method \\
+       based on LigandMPNN inverse-folding distributions}
+\author{Guglielmo Tedeschi}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We assess whether the change a ligand induces in the per-residue amino-acid
+distribution produced by LigandMPNN, relative to a co-evolved reference
+complex, can be used as a discrimination signal between active and decoy
+binders. The method requires only a single forward pass of LigandMPNN per
+docked pose (no molecular dynamics, no free-energy perturbation, no
+finetuning), and reduces every pose to a single scalar: the mean
+Jensen--Shannon divergence across the pocket, which we call the
+\emph{perturbation score}. We benchmark the score on an ABL1 / imatinib
+active--decoy set, and report AUROC, enrichment factors, and a bootstrap
+confidence interval. The framework is target-agnostic: switching protein
+requires only changing the reference complex and the docked library.
+\end{abstract}
+
+\section{Motivation}
+
+Structure-based virtual screening typically falls into two regimes:
+\emph{fast} (docking scores, shape complementarity) and \emph{slow} (free
+energy of binding via MD/FEP). The fast methods are inexpensive but noisy;
+the slow methods are accurate but inapplicable at library scale.
+
+LigandMPNN~\cite{LigandMPNN} is an inverse-folding model: given a backbone
+and a ligand, it outputs, for each residue position, a probability
+distribution over the 20 canonical amino acids. The distribution reflects
+which residue identity the network believes is most consistent with the
+\emph{backbone + ligand} context. A pocket that has co-evolved with its
+native ligand yields, at the pocket residues, a low-entropy distribution
+peaked on the wild-type residue. A non-native ligand placed in the same
+pocket pushes that distribution away from its peak.
+
+The central hypothesis of this work is:
+
+\begin{quote}
+\emph{The magnitude of the per-residue distribution drift, measured between
+the reference complex and a candidate pose, is small for active binders
+and large for decoys.}
+\end{quote}
+
+If true, the drift itself becomes a usable ranking signal --- one that is
+free of explicit binding-energy estimation, requires no sampling, and is
+computed in a single LigandMPNN forward pass.
+
+\section{Notation}
+
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$N$ & Number of residues in the pocket selection (identical for ref \& screening)\\
+$A=21$ & Alphabet size (20 canonical AAs + unknown token \texttt{X})\\
+$R$ & Number of LigandMPNN replicas per pose \\
+$P_{\mathrm{ref}}\in [0,1]^{N\times A}$ & Reference per-residue AA distribution \\
+$Q_p\in [0,1]^{N\times A}$ & Distribution for screening pose $p$ \\
+$\jsd_i$ & Jensen--Shannon divergence at residue $i$ \\
+$S_p$ & Perturbation score for pose $p$ \\
+$y_p \in \{0,1\}$ & Label: $1$ = active, $0$ = decoy \\
+\bottomrule
+\end{tabular}
+
+All probability matrices are row-stochastic:
+$\sum_{a=1}^{A} P_{\mathrm{ref}}[i,a] = 1$ for every residue $i$.
+
+\section{Pipeline}
+
+The pipeline is a linear sequence of six stages.
+
+\begin{enumerate}[leftmargin=*, label=\textbf{(\arabic*)}]
+
+  \item \textbf{Docking (\texttt{gnina\_docking.py}).}
+  Each ligand of the library is docked into the protein with
+  GNINA~\cite{GNINA}, using the reference ligand to define the binding
+  site:
+  \[
+  \mathrm{box\,center} = \frac{1}{N_{\mathrm{lig}}}\sum_{k=1}^{N_{\mathrm{lig}}}
+  \mathbf{r}_k^{\mathrm{ref}},
+  \qquad
+  \mathrm{box\,size} = \mathrm{ref\,extent} + 2\,\Delta_{\mathrm{box}}.
+  \]
+  $\Delta_{\mathrm{box}}$ (\texttt{autobox\_add}, default 8\,\AA) is the
+  isotropic padding around the reference. GNINA returns up to
+  $\texttt{num\_modes}=9$ poses per ligand, each annotated with three
+  scores: \texttt{CNNscore}, \texttt{CNNaffinity}, and
+  \texttt{minimizedAffinity}.
+
+  \item \textbf{Pose selection (\texttt{combine\_sdf\_protein.py}).}
+  For each ligand, we keep the single pose with the highest
+  \texttt{CNNaffinity} (or another GNINA-reported metric, configurable)
+  and write a protein--ligand complex PDB.
+
+  \item \textbf{Pose QC (\texttt{pose\_qc.py}).}
+  Two checks are run on every complex:
+
+  \begin{itemize}[leftmargin=*]
+    \item \emph{Clash detection (FAIL).} For every pair (protein heavy
+    atom $a$, ligand heavy atom $b$), we compute the distance $d_{ab}$ and
+    compare it to an element-aware threshold
+    \[
+    \tau_{ab} = \max\bigl(\tau_{\min},\; 0.75\,(r^{\mathrm{cov}}_a +
+    r^{\mathrm{cov}}_b)\bigr),
+    \]
+    where $r^{\mathrm{cov}}$ are tabulated covalent radii. The pose fails
+    if any $d_{ab} < \tau_{ab}$. The $0.75$ factor and the
+    \texttt{clash\_dist} floor ($\tau_{\min}=1.5$\,\AA\ by default)
+    together prevent both false negatives (true overlaps) and false
+    positives (genuine covalent linkers).
+    \item \emph{Geometry check (WARN).} We rebuild an RDKit molecule from
+    the ligand PDB block and verify, per bond, that the length lies in a
+    tabulated $(\ell_{\min},\ell_{\max})$ range, and per heavy-atom triple
+    that the angle lies in a tabulated $(\theta_{\min},\theta_{\max})$
+    range. Violations raise warnings; under \texttt{--strict} they become
+    failures.
+  \end{itemize}
+
+  Failed poses are dropped before LigandMPNN sees them.
+
+  \item \textbf{Pocket residue selection (\texttt{residues\_selection.py}).}
+  Given the reference complex, we compute the geometric center
+  $\mathbf{c}$ of the reference ligand and select every protein residue
+  with at least one atom inside the autobox sphere:
+  \[
+  \mathcal{R} \;=\; \bigl\{ \text{residue $i$} \;:\;
+    \min_{j \in \text{atoms}(i)} \|\mathbf{r}_j - \mathbf{c}\|
+    \le \Delta_{\mathrm{box}} \bigr\}.
+  \]
+  $\mathcal{R}$ is fixed across the whole library, so reference and
+  screening matrices have identical shape and the per-residue comparison
+  is well-defined.
+
+  \item \textbf{LigandMPNN forward pass (\texttt{run\_pipeline.sh},
+  \texttt{run\_score.sh}).} For each complex $p$, LigandMPNN is run with
+  $R$ replicas (different seeds, identical inputs) over the residues
+  $\mathcal{R}$, producing a tensor of shape $(R, N, A)$. We average over
+  replicas to reduce stochastic noise:
+  \[
+  Q_p[i, a] \;=\; \frac{1}{R} \sum_{r=1}^{R} \mathrm{LigandMPNN}_r(p)[i, a].
+  \]
+  The reference complex is run identically, producing
+  $P_{\mathrm{ref}}$.
+
+  \item \textbf{Perturbation score \& evaluation (\texttt{aucroc.py}).}
+  See Section~\ref{sec:score}.
+
+\end{enumerate}
+
+\section{The perturbation score}
+\label{sec:score}
+
+\subsection{Per-residue divergence}
+
+We use the Jensen--Shannon divergence, base 2:
+\begin{equation}
+\jsd(P \,\|\, Q) \;=\; \tfrac{1}{2}\,\kl(P \,\|\, M)
+                  + \tfrac{1}{2}\,\kl(Q \,\|\, M),
+\qquad
+M = \tfrac{1}{2}(P + Q),
+\label{eq:jsd}
+\end{equation}
+with $\kl(P\|Q) = \sum_a P(a)\log_2\!\bigl(P(a)/Q(a)\bigr)$.
+
+JSD has three properties that matter here:
+\begin{itemize}[leftmargin=*]
+  \item \emph{Symmetric}, $\jsd(P,Q)=\jsd(Q,P)$, so the score does not
+        depend on which side we call "reference".
+  \item \emph{Bounded} in $[0, 1]$ when $\log_2$ is used. The score is
+        thus comparable across targets and residues without rescaling.
+  \item \emph{Smoothing-free.} Since $M=\tfrac12(P+Q)$ is strictly
+        positive wherever either $P$ or $Q$ is positive, no
+        $\varepsilon$ regularisation is needed --- unlike a naive
+        $\kl(P\|Q)$ which diverges if $Q$ assigns zero probability to a
+        residue identity supported by $P$.
+\end{itemize}
+
+\subsection{Aggregated pose score}
+
+Given the reference $P_{\mathrm{ref}}$ and pose distribution $Q_p$ on the
+same $N$ residues, we compute a JSD vector
+$\bigl(\jsd_1^{(p)},\dots,\jsd_N^{(p)}\bigr)$ via Eq.~\eqref{eq:jsd}, and
+aggregate to a single scalar:
+\begin{equation}
+S_p \;=\; 100 \times \frac{1}{N} \sum_{i=1}^{N} \jsd_i^{(p)}.
+\label{eq:score}
+\end{equation}
+The factor 100 is cosmetic --- it puts the score on a $0$--$100$ scale
+since $\jsd_i \in [0,1]$.
+
+\subsection{Sign of the score}
+
+By construction, $S_p \ge 0$. The screening hypothesis is that active
+ligands give small $S_p$ and decoys give large $S_p$. To use $S_p$
+directly in a ROC curve, where higher values must indicate the positive
+class, we work with $-S_p$:
+\begin{equation}
+\hat s_p \;\equiv\; -S_p, \qquad
+y_p \;=\; \begin{cases} 1 & \text{if pose $p$ is an active}, \\ 0 & \text{if a decoy}. \end{cases}
+\end{equation}
+
+\subsection{Duplicate compounds}
+
+A library entry may produce several poses (e.g.\ stereoisomers,
+tautomers). We keep, per compound id, the pose with the \emph{lowest}
+$S_p$ (the most active-like) and discard the others. This is the
+standard "best-pose-per-compound" convention; it makes the AUROC reflect
+ranking power at the compound level, not at the pose level.
+
+\section{Statistical evaluation}
+
+\subsection{AUROC}
+
+The Area Under the Receiver-Operating-Characteristic curve is computed
+on $(\hat s_p, y_p)$ pairs in the usual way:
+\begin{equation}
+\mathrm{AUROC} \;=\;
+\frac{1}{n_+\,n_-}
+\sum_{p : y_p=1}\;\sum_{q : y_q=0}
+\Indic\!\bigl[\hat s_p > \hat s_q\bigr] +
+\tfrac12\,\Indic\!\bigl[\hat s_p = \hat s_q\bigr],
+\end{equation}
+where $n_+$ ($n_-$) is the number of actives (decoys). It is the
+probability that, drawing one active and one decoy at random, the active
+has the higher predicted score.
+
+\subsection{Bootstrap confidence interval}
+
+We resample with replacement the $(y_p, \hat s_p)$ pairs $B$ times
+(default $B=2000$, seed $42$); on each resample we recompute the AUROC,
+skipping degenerate resamples (only one class). The percentile bootstrap
+$95\%$ CI is
+\[
+\bigl[\mathrm{AUROC}_{(2.5)},\;\mathrm{AUROC}_{(97.5)}\bigr],
+\]
+i.e.\ the empirical $2.5$ and $97.5$ percentiles of the $B$ resampled
+AUROCs.
+
+\subsection{Enrichment factor}
+
+For a fraction $f \in (0,1]$ (default $f \in \{0.01, 0.05, 0.10\}$):
+\begin{equation}
+\mathrm{EF}(f) \;=\;
+\dfrac{
+    \#\{p : y_p=1 \text{ and } \hat s_p \in \text{top-}f \}
+    \;/\;
+    \#\{\text{top-}f\}
+}{
+    n_+ / n
+},
+\qquad
+\#\{\text{top-}f\} = \lfloor f \cdot n \rfloor.
+\end{equation}
+$\mathrm{EF}(f)=1$ means "no better than random"; the theoretical maximum
+is $\min(1, n_+/\#\{\text{top-}f\}) / (n_+/n)$ and depends on the library
+composition.
+
+\subsection{Operating point: Youden's J}
+
+Picking a single threshold turns the ranker into a classifier. We use
+Youden's index, the threshold $t^*$ that maximises
+\[
+J(t) \;=\; \mathrm{TPR}(t) - \mathrm{FPR}(t).
+\]
+At that threshold we report accuracy, balanced accuracy, precision,
+recall, specificity, $F_1$, and Matthews' correlation coefficient (MCC).
+
+\section{Implementation map}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Stage & Script \\
+\midrule
+Docking                        & \texttt{scripts/gnina\_docking.py} \\
+Best-pose selection            & \texttt{scripts/combine\_sdf\_protein.py} \\
+Clash + geometry QC            & \texttt{scripts/pose\_qc.py} \\
+Pocket residue selection       & \texttt{scripts/residues\_selection.py} \\
+LigandMPNN design batch        & \texttt{scripts/run\_pipeline.sh} \\
+LigandMPNN per-pose scoring    & \texttt{scripts/run\_score.sh} \\
+JSD score, AUROC, EF, CI       & \texttt{scripts/aucroc.py} \\
+Single-pair inspection         & \texttt{analysis.ipynb} \\
+Config (single source of truth)& \texttt{scripts/config.yaml} \\
+YAML reader (PyYAML)           & \texttt{scripts/parse_config.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Operating assumptions and failure modes}
+
+\paragraph{Pocket invariance.}
+The same residue set $\mathcal{R}$ is used for the reference and for every
+screening pose, by construction. If the user re-runs the selection with a
+different \texttt{autobox\_add}, all previously computed $.pt$ files
+become incomparable to the new reference --- $Q_p$ and $P_{\mathrm{ref}}$
+would have different $N$. The pipeline detects shape mismatches and
+skips, but a partial regeneration leaves a silently inconsistent dataset.
+
+\paragraph{Temperature.}
+The LigandMPNN sampling temperature $T$ flattens (high $T$) or sharpens
+(low $T$) the per-residue distributions. JSD is not invariant under $T$:
+absolute scores depend on it. AUROC is approximately stable but should
+not be reported across runs with different $T$.
+
+\paragraph{Reference choice.}
+A single reference complex carries all the structural assumptions. For
+targets where the apo-to-holo motion is large, using a single crystal as
+reference may bias the distribution toward one conformational state.
+\texttt{aucroc.py} accepts a folder as \texttt{--reference}, in which
+case the per-file distributions (each averaged over its own replicas) are
+averaged a second time across files --- this is the right thing if you
+want to use multiple snapshots of the holo state.
+
+\paragraph{Active/decoy ratio.}
+DUD-E-style benchmarks have $\approx 50\!:\!1$ decoy:active ratios; the
+ABL1 set used here is smaller and more balanced. The Enrichment Factor
+ceilings reported in the figure account for the actual ratio.
+
+\paragraph{Pose quality dominates.}
+Garbage in, garbage out: a docking pose with the ligand outside the
+pocket will trivially produce a small perturbation (because LigandMPNN
+sees no ligand in the binding site) and will look like an active. The
+QC stage (clashes + geometry) is the main guard against this; users
+who disable it should expect score inflation in the active-like
+direction.
+
+\paragraph{Validation set is small.}
+At the time of writing the ABL1 set contains $\mathcal{O}(10^1)$ actives;
+AUROC point estimates therefore have wide bootstrap CIs, and the
+qualitative direction of the effect (small $S$ = active) is the main
+claim --- not the precise AUROC value.
+
+\section{Reproducibility checklist}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Seeds.} LigandMPNN design: $\mathrm{seed}=42$
+    (\texttt{config.yaml}); LigandMPNN scoring: $\mathrm{seed}=111$
+    (\texttt{run\_score.sh}); bootstrap: $\mathrm{seed}=42$
+    (\texttt{aucroc.py}).
+  \item \textbf{Environments.} \texttt{environment-analysis.yml} and
+    \texttt{environment-ligandmpnn.yml} pin the runtime; the LigandMPNN
+    checkpoint hash should also be recorded per run.
+  \item \textbf{Inputs.} Reference complex PDB (cleaned, single chain,
+    single ligand), docked SDFs (one per ligand), pocket residue list
+    (auto-derived from the reference).
+  \item \textbf{Outputs.} For every screening pass:
+    a CSV of per-pose scores, a 3-panel ROC/score/EF PNG, and the
+    LigandMPNN \texttt{.pt} files (kept under \texttt{output\_*/} or
+    \texttt{experiments/}, both git-ignored).
+\end{itemize}
+
+\section{Glossary}
+
+\begin{description}[leftmargin=2.5cm, style=nextline]
+  \item[Active] A ligand annotated as a real binder of the target. Label
+    $y=1$.
+  \item[Decoy] A ligand annotated as a non-binder, typically chosen with
+    physico-chemical properties matched to the actives (DUD-E style).
+    Label $y=0$.
+  \item[Pocket] The set $\mathcal{R}$ of residues within the autobox
+    sphere centred on the reference ligand.
+  \item[Perturbation score] $S_p$ as in Eq.~\eqref{eq:score}; the
+    pose-level scalar fed into the ROC.
+  \item[Reference complex] The protein--ligand crystal (or otherwise
+    high-confidence structure) used to define both the pocket and the
+    reference distribution $P_{\mathrm{ref}}$.
+  \item[Replica] One LigandMPNN forward pass with a fresh seed; replicas
+    are averaged before any divergence is computed.
+\end{description}
+
+\begin{thebibliography}{9}
+
+\bibitem{LigandMPNN}
+Dauparas, J., Lee, G.R., Pecoraro, R., An, L., Anishchenko, I., Glasscock,
+C., Baker, D.
+\emph{Atomic context-conditioned protein sequence design using LigandMPNN.}
+Nature Methods, 2025.
+
+\bibitem{GNINA}
+McNutt, A.T., Francoeur, P., Aggarwal, R., Masuda, T., Meli, R., Ragoza,
+M., Sunseri, J., Koes, D.R.
+\emph{GNINA 1.0: molecular docking with deep learning.}
+Journal of Cheminformatics 13, 43 (2021).
+
+\end{thebibliography}
+
+\end{document}

@@ -6,7 +6,7 @@ specified folder, then calculates the AUROC using:
   - label = 1  if the filename contains "active"  (configurable keyword)
   - label = 0  if the filename contains "decoy"   (configurable keyword)
 
-The reference (intact / real ligand) is set via REFERENCE_PATH (single .pt file
+The reference (intact / real ligand) is set via --reference (single .pt file
 or a folder — all replicas and files are averaged). Duplicate compounds are
 automatically removed, keeping the pose with the lowest perturbation score.
 
@@ -17,9 +17,14 @@ Enrichment Factors at 1%, 5%, and 10% of the library are reported.
 A bootstrap 95% confidence interval on the AUROC is computed (default 2000 resamples).
 
 Usage:
-    python auroc.py
+    python aucroc.py --scoring-dir <DIR> --reference <FILE_OR_DIR> \\
+                     --out-csv <CSV> --out-roc <PNG>
+
+    # Backwards-compatible: run with no args to use the ABL1 defaults below.
+    python aucroc.py
 """
 
+import argparse
 import re
 import sys
 import glob
@@ -42,32 +47,29 @@ from sklearn.metrics import (
 import torch
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION  ← edit here
+# DEFAULTS (used when CLI args are omitted) — feel free to edit
 # ──────────────────────────────────────────────────────────────────────────────
 
-SCORING_DIR = "/home/tedeschg/prj/protein-perturbation/output_abl1_lmpnn_focused/scoring"
+DEFAULT_SCORING_DIR = "/home/tedeschg/prj/protein-perturbation/output_abl1_lmpnn_focused/scoring"
 
-# REFERENCE_PATH can be:
+# Reference path can be:
 #   - a single .pt file  → its replicas are averaged (mean over replica axis)
 #   - a folder of .pt files → all files are loaded and their probs are averaged together
-REFERENCE_PATH = (
-    "/home/tedeschg/prj/protein-perturbation/experiments/output_abl1_reference/2hzi_clean_11.pt"
+DEFAULT_REFERENCE_PATH = (
+    "/home/tedeschg/prj/protein-perturbation/output_REFERENCE_abl1_lmpnn_focused/scoring/2hzi_clean_1.pt"
 )
 
-# Keywords to assign labels from filenames
-ACTIVE_KEYWORD = "active"   # label = 1
-DECOY_KEYWORD  = "decoy"    # label = 0
+DEFAULT_ACTIVE_KEYWORD = "active"   # label = 1
+DEFAULT_DECOY_KEYWORD  = "decoy"    # label = 0
 
-OUT_CSV = "/home/tedeschg/prj/protein-perturbation/perturbation_scores_all_abl1_focused.csv"
-OUT_ROC = "/home/tedeschg/prj/protein-perturbation/roc_curve_all_abl1_focused.png"
+DEFAULT_OUT_CSV = "/home/tedeschg/prj/protein-perturbation/perturbation_scores_all_abl1_focused.csv"
+DEFAULT_OUT_ROC = "/home/tedeschg/prj/protein-perturbation/roc_curve_all_abl1_focused.png"
 
-# Bootstrap settings
-BOOTSTRAP_N_RESAMPLES = 2000   # number of bootstrap iterations for AUROC CI
-BOOTSTRAP_CI          = 0.95   # confidence level (e.g. 0.95 → 95% CI)
-BOOTSTRAP_SEED        = 42     # random seed for reproducibility
+DEFAULT_BOOTSTRAP_N_RESAMPLES = 2000
+DEFAULT_BOOTSTRAP_CI          = 0.95
+DEFAULT_BOOTSTRAP_SEED        = 42
 
-# Enrichment Factor fractions
-EF_FRACTIONS = [0.01, 0.05, 0.10]   # 1 %, 5 %, 10 %
+DEFAULT_EF_FRACTIONS = [0.01, 0.05, 0.10]   # 1 %, 5 %, 10 %
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -103,7 +105,7 @@ def load_reference(ref_path: str) -> tuple[np.ndarray, int]:
             sys.exit(f"ERROR: no .pt files found in reference folder: {ref_path}")
         all_probs = [load_probs(str(f)) for f in pt_files]
         return np.mean(all_probs, axis=0), len(pt_files)
-    sys.exit(f"ERROR: REFERENCE_PATH does not exist: {ref_path}")
+    sys.exit(f"ERROR: --reference does not exist: {ref_path}")
 
 
 def jsd_per_residue(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
@@ -128,12 +130,12 @@ def perturbation_score(jsd_values: np.ndarray) -> float:
     return float(jsd_values.mean() * 100)
 
 
-def assign_label(filename: str) -> int | None:
+def assign_label(filename: str, active_kw: str, decoy_kw: str) -> int | None:
     """Returns 1 (active), 0 (decoy), or None if the file cannot be classified."""
     name = filename.lower()
-    if ACTIVE_KEYWORD in name:
+    if active_kw in name:
         return 1
-    if DECOY_KEYWORD in name:
+    if decoy_kw in name:
         return 0
     return None
 
@@ -242,18 +244,54 @@ def bootstrap_auroc_ci(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Compute the JSD perturbation score for every .pt file in a folder "
+                    "and report AUROC, bootstrap CI, EF, and classification metrics.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--scoring-dir", default=DEFAULT_SCORING_DIR,
+                   help="Folder containing per-pose .pt files produced by LigandMPNN score.py.")
+    p.add_argument("--reference",   default=DEFAULT_REFERENCE_PATH,
+                   help="Reference .pt file OR folder of .pt files (averaged across files+replicas).")
+    p.add_argument("--out-csv",     default=DEFAULT_OUT_CSV,
+                   help="Output CSV with per-file scores.")
+    p.add_argument("--out-roc",     default=DEFAULT_OUT_ROC,
+                   help="Output PNG for the ROC + score-distribution + EF panels.")
+    p.add_argument("--active-keyword", default=DEFAULT_ACTIVE_KEYWORD,
+                   help="Substring in a filename that marks it as an active (label=1).")
+    p.add_argument("--decoy-keyword",  default=DEFAULT_DECOY_KEYWORD,
+                   help="Substring in a filename that marks it as a decoy (label=0).")
+    p.add_argument("--bootstrap-n",    type=int,   default=DEFAULT_BOOTSTRAP_N_RESAMPLES,
+                   help="Number of bootstrap resamples for the AUROC CI.")
+    p.add_argument("--bootstrap-ci",   type=float, default=DEFAULT_BOOTSTRAP_CI,
+                   help="Confidence level for the bootstrap CI, e.g. 0.95.")
+    p.add_argument("--bootstrap-seed", type=int,   default=DEFAULT_BOOTSTRAP_SEED,
+                   help="Random seed for the bootstrap.")
+    p.add_argument("--ef-fractions",   type=float, nargs="+",
+                   default=DEFAULT_EF_FRACTIONS,
+                   help="Top fractions for Enrichment Factor (e.g. 0.01 0.05 0.10).")
+    return p.parse_args()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    args = parse_args()
+
     print("=" * 60)
     print(" Perturbation Score + AUROC Calculator")
     print("=" * 60)
 
     # ── 1. Load reference ────────────────────────────────────────────────────
-    print(f"\n[1/4] Loading reference: {REFERENCE_PATH}")
+    print(f"\n[1/4] Loading reference: {args.reference}")
     try:
-        P_ref, n_ref_files = load_reference(REFERENCE_PATH)
+        P_ref, n_ref_files = load_reference(args.reference)
     except SystemExit:
         raise
     except Exception as exc:
@@ -262,13 +300,13 @@ def main() -> None:
     print(f"      Reference probs shape  : {P_ref.shape}  (replicas already averaged)")
 
     # ── 2. Find scoring files ────────────────────────────────────────────────
-    pt_files = sorted(glob.glob(str(pathlib.Path(SCORING_DIR) / "*.pt")))
+    pt_files = sorted(glob.glob(str(pathlib.Path(args.scoring_dir) / "*.pt")))
     if not pt_files:
-        sys.exit(f"No .pt files found in: {SCORING_DIR}")
-    print(f"\n[2/4] Found {len(pt_files)} .pt files in {SCORING_DIR}")
+        sys.exit(f"No .pt files found in: {args.scoring_dir}")
+    print(f"\n[2/4] Found {len(pt_files)} .pt files in {args.scoring_dir}")
 
-    missing_actives = find_missing_indices(pt_files, ACTIVE_KEYWORD)
-    missing_decoys  = find_missing_indices(pt_files, DECOY_KEYWORD)
+    missing_actives = find_missing_indices(pt_files, args.active_keyword)
+    missing_decoys  = find_missing_indices(pt_files, args.decoy_keyword)
 
     if missing_actives or missing_decoys:
         print("\n" + "=" * 60)
@@ -292,7 +330,7 @@ def main() -> None:
 
     for fp in pt_files:
         fname = pathlib.Path(fp).name
-        label = assign_label(fname)
+        label = assign_label(fname, args.active_keyword, args.decoy_keyword)
 
         try:
             Q = load_probs(fp)
@@ -349,8 +387,8 @@ def main() -> None:
         print("\n  [DEDUP] No duplicates found.")
 
     # Save CSV
-    df.to_csv(OUT_CSV, index=False)
-    print(f"\n  → Scores saved to: {OUT_CSV}")
+    df.to_csv(args.out_csv, index=False)
+    print(f"\n  → Scores saved to: {args.out_csv}")
 
     # Summary table
     print("\n" + "─" * 60)
@@ -379,17 +417,17 @@ def main() -> None:
 
     # ── Bootstrap CI on AUROC ────────────────────────────────────────────────
     print(f"  Computing bootstrap CI  "
-          f"({BOOTSTRAP_N_RESAMPLES} resamples, {int(BOOTSTRAP_CI*100)}% CI)…")
+          f"({args.bootstrap_n} resamples, {int(args.bootstrap_ci*100)}% CI)…")
     ci_lower, ci_upper = bootstrap_auroc_ci(
         labels, scores_neg,
-        n_resamples=BOOTSTRAP_N_RESAMPLES,
-        ci=BOOTSTRAP_CI,
-        seed=BOOTSTRAP_SEED,
+        n_resamples=args.bootstrap_n,
+        ci=args.bootstrap_ci,
+        seed=args.bootstrap_seed,
     )
 
     # ── Enrichment Factors ───────────────────────────────────────────────────
     ef_results: dict[float, float] = {}
-    for frac in EF_FRACTIONS:
+    for frac in args.ef_fractions:
         ef_results[frac] = enrichment_factor(labels, scores_neg, frac)
 
     # Max theoretical EF (limited by library composition and fraction size)
@@ -413,7 +451,7 @@ def main() -> None:
     spec = tn / (tn + fp_val) if (tn + fp_val) > 0 else 0.0   # specificity
 
     sep = "─" * 52
-    ci_pct = int(BOOTSTRAP_CI * 100)
+    ci_pct = int(args.bootstrap_ci * 100)
     print(f"\n  {sep}")
     print(f"  {'AUROC':<34s}: {auroc:.4f}")
     print(f"  {'AUROC bootstrap CI':<34s}: [{ci_lower:.4f}, {ci_upper:.4f}]  ({ci_pct}%)")
@@ -425,10 +463,11 @@ def main() -> None:
         # Theoretical maximum EF
         n_top_k   = max(1, int(np.floor(frac * n_total)))
         ef_max    = min(1.0, n_act / n_top_k) / base_rate if base_rate > 0 else float("nan")
-        ef_str    = f"{ef_val:.3f}" if not np.isnan(ef_val) else "n/a"
-        max_str   = f"{ef_max:.3f}" if not np.isnan(ef_max) else "n/a"
+        ef_str    = f"{ef_val:.3f}"  if not np.isnan(ef_val)  else "n/a"
+        max_str   = f"{ef_max:.3f}"  if not np.isnan(ef_max) else "n/a"
         print(f"  {pct_label:<34s}: {ef_str:<10s}  (max achievable: {max_str})")
     print(f"  {sep}")
+    ef_fractions = args.ef_fractions
 
     print(f"  {'Optimal threshold (Youden)':<34s}: {-best_thresh:.5f}")
     print(f"  {sep}")
@@ -494,15 +533,15 @@ def main() -> None:
 
     # Panel 3 – Enrichment Factor bar chart
     ax3 = axes[2]
-    ef_labels = [f"EF{int(f*100)}%" for f in EF_FRACTIONS]
-    ef_vals   = [ef_results[f] for f in EF_FRACTIONS]
+    ef_labels = [f"EF{int(f*100)}%" for f in ef_fractions]
+    ef_vals   = [ef_results[f] for f in ef_fractions]
     ef_maxes  = []
-    for frac in EF_FRACTIONS:
+    for frac in ef_fractions:
         n_top_k = max(1, int(np.floor(frac * n_total)))
         ef_max  = min(1.0, n_act / n_top_k) / base_rate if base_rate > 0 else float("nan")
         ef_maxes.append(ef_max)
 
-    x      = np.arange(len(EF_FRACTIONS))
+    x      = np.arange(len(ef_fractions))
     width  = 0.35
     bars1  = ax3.bar(x - width / 2, ef_vals, width, label="Observed EF",
                      color="steelblue", alpha=0.85, zorder=3)
@@ -535,8 +574,8 @@ def main() -> None:
         fontsize=13, fontweight="bold", y=1.01,
     )
     plt.tight_layout()
-    plt.savefig(OUT_ROC, dpi=150, bbox_inches="tight")
-    print(f"\n  → ROC curve saved to: {OUT_ROC}")
+    plt.savefig(args.out_roc, dpi=150, bbox_inches="tight")
+    print(f"\n  → ROC curve saved to: {args.out_roc}")
     plt.show()
 
     if skipped:

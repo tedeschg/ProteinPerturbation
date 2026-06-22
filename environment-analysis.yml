@@ -1,0 +1,36 @@
+# =============================================================================
+# Analysis / QC / docking environment for the protein-perturbation pipeline
+# =============================================================================
+# Used by:
+#   - pose_qc.py
+#   - residues_selection.py
+#   - gnina_docking.py            (also requires the external `gnina` binary)
+#   - combine_sdf_protein.py
+#   - aucroc.py                   (loads LigandMPNN .pt files via torch)
+#   - analysis.ipynb
+#   - parse_config.py             (YAML helper for run_pipeline.sh)
+#
+# Install:
+#   conda env create -f environment-analysis.yml
+#   conda activate protein-perturbation-analysis
+#
+# Note: `gnina` is a separate binary; install via conda-forge or from
+#       https://github.com/gnina/gnina/releases
+# =============================================================================
+name: protein-perturbation-analysis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-learn
+  - pyyaml
+  - rdkit
+  - biopython
+  - pytorch                  # CPU build is fine — only used for torch.load on .pt files
+  - jupyterlab
+  - ipykernel

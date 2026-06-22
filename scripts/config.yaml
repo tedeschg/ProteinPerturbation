@@ -8,7 +8,7 @@ project_root: "/home/tedeschg/prj/protein-perturbation"
 lmpnn_path: "/software/lmpnn/LigandMPNN"
 env_dockndesign: "base"
 env_ligandmpnn: "ligandmpnn_env"
-output_dir: "output_abl1_lmpnn_focused"
+output_dir: "output_REFERENCE_abl1_lmpnn_focused"
 
 # --- Residue selection (docking‑box based) ---
 residues_selection:

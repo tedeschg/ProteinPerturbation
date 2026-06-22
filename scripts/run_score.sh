@@ -7,8 +7,8 @@ source "$HOME/miniforge3/etc/profile.d/conda.sh"
 conda activate ligandmpnn_env
 
 LMPNN_PATH="/software/lmpnn/LigandMPNN"
-BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_abl1_lmpnn_focused/backbones"
-OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_abl1_lmpnn_focused/scoring/"
+BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_REFERENCE_abl1_lmpnn_focused/backbones/"
+OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_REFERENCE_abl1_lmpnn_focused/scoring/"
 
 ### Only for the reference ##################################################
 #BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_cdk2_reference/backbones/1h00_protein_fap_1.pdb"
