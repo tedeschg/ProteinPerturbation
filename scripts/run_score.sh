@@ -7,20 +7,15 @@ source "$HOME/miniforge3/etc/profile.d/conda.sh"
 conda activate ligandmpnn_env
 
 LMPNN_PATH="/software/lmpnn/LigandMPNN"
-BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_REFERENCE_abl1_lmpnn_focused/backbones/"
-OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_REFERENCE_abl1_lmpnn_focused/scoring/"
+BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_1a28_lmpnn/backbones/"
+OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_1a28_score/"
 
-### Only for the reference ##################################################
-#BACKBONES_DIR="/home/tedeschg/prj/protein-perturbation/output_cdk2_reference/backbones/1h00_protein_fap_1.pdb"
-#OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_cdk2_reference"
+### REFERENCE ##################################################
+#BACKBONES_DIR="output_1a28_lmpnn_REFERENCE/backbones/"
+#OUT_FOLDER="/home/tedeschg/prj/protein-perturbation/output_1a28_score_REFERENCE"
 #############################################################################
 
 mkdir -p "$OUT_FOLDER"
-
-
-### Only for the reference ###
-#PDB_FILES=("$BACKBONES_DIR" )
-##############################
 
 PDB_FILES=("$BACKBONES_DIR"/*.pdb)
 TOTAL=${#PDB_FILES[@]}

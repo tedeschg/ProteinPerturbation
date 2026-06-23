@@ -7,6 +7,18 @@ complete protein-ligand complex PDB files.
 
 Usage:
     python combine_sdf_protein.py --protein protein.pdb --sdf_dir gnina_results --output_dir complexes
+   
+    # Best pose by CNNscore (default)
+    python combine_sdf_protein.py -p protein.pdb -s gnina_results -o complexes --best_only
+
+    # Best pose by minimizedAffinity (most negative = strongest binder)
+    python combine_sdf_protein.py -p protein.pdb -s gnina_results -o complexes --best_only --rank_by minimizedAffinity
+
+    # All poses for a single file
+    python combine_sdf_protein.py -p protein.pdb -f ligand_docked.sdf -o complexes
+
+    # Best pose by CNNaffinity, single file
+    python combine_sdf_protein.py -p protein.pdb -f ligand_docked.sdf -o complexes --best_only --rank_by CNNaffinity
 """
 
 import argparse
