@@ -57,11 +57,15 @@ LIGAND_EXTENSIONS = (".sdf", ".mol2", ".pdb")
 # ---------------------------------------------------------------------------
 
 def read_protein_pdb(pdb_file: Path) -> List[str]:
-    """Read ATOM lines from a PDB protein file (skip existing HETATM ligands)."""
+    """Read ATOM lines from a PDB protein file (skip existing HETATM ligands).
+
+    TER records are preserved so multi-chain proteins keep their chain breaks —
+    LigandMPNN's parse_PDB relies on TER to delimit chains.
+    """
     protein_lines = []
     with open(pdb_file) as f:
         for line in f:
-            if line.startswith("ATOM"):
+            if line.startswith(("ATOM", "TER")):
                 protein_lines.append(line)
             elif line.startswith(("HEADER", "TITLE", "REMARK", "CRYST1")):
                 protein_lines.append(line)
