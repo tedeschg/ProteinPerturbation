@@ -56,17 +56,75 @@ LIGAND_EXTENSIONS = (".sdf", ".mol2", ".pdb")
 # Protein readers
 # ---------------------------------------------------------------------------
 
+# AMBER / protonation-variant residue names → canonical 20-AA names.
+# LigandMPNN's parse_PDB only recognises the standard 3-letter codes; anything
+# else gets mapped to "X" and breaks downstream indexing.
+AMBER_RESNAME_MAP = {
+    "CYX": "CYS",  # disulfide-bonded cysteine
+    "CYM": "CYS",  # deprotonated cysteine
+    "HIP": "HIS",  # doubly-protonated histidine
+    "HID": "HIS",  # δ-protonated histidine
+    "HIE": "HIS",  # ε-protonated histidine
+    "ASH": "ASP",  # protonated aspartate
+    "GLH": "GLU",  # protonated glutamate
+    "LYN": "LYS",  # deprotonated lysine
+}
+
+
+def _canonicalize_resname(line: str) -> str:
+    """Rewrite columns 18-20 (residue name) to the canonical 3-letter code."""
+    if len(line) < 20:
+        return line
+    resname = line[17:20]
+    new = AMBER_RESNAME_MAP.get(resname.strip())
+    if new is None:
+        return line
+    return line[:17] + f"{new:<3}" + line[20:]
+
+
 def read_protein_pdb(pdb_file: Path) -> List[str]:
     """Read ATOM lines from a PDB protein file (skip existing HETATM ligands).
 
-    TER records are preserved so multi-chain proteins keep their chain breaks —
-    LigandMPNN's parse_PDB relies on TER to delimit chains.
+    Three cleanups are applied so LigandMPNN's parse_PDB can consume the file:
+      • TER records are preserved (chain delimiters).
+      • AMBER residue names (CYX/HIP/HID/HIE/...) are mapped to canonical codes.
+      • Duplicate residues at the same (chain, resnum, icode) — common in DOCK
+        receptor files that encode side-chain ensembles without altloc — are
+        collapsed to the first occurrence seen. A "new residue" is detected
+        when the residue key changes OR an atom name already seen at the
+        current position repeats (handles the case of two distinct residues
+        sharing the same chain/resnum/icode/resname).
     """
-    protein_lines = []
+    protein_lines: List[str] = []
+    prev_key = None                    # (chain, resnum, icode, resname)
+    seen_positions: set = set()        # (chain, resnum, icode)
+    cur_atom_names: set = set()
+    keep = True
+
     with open(pdb_file) as f:
         for line in f:
-            if line.startswith(("ATOM", "TER")):
+            if line.startswith("ATOM") and len(line) >= 27:
+                line = _canonicalize_resname(line)
+                pos = (line[21], line[22:26], line[26])
+                key = (*pos, line[17:20])
+                atom_name = line[12:16].strip()
+                new_residue = (key != prev_key) or (atom_name in cur_atom_names)
+                if new_residue:
+                    cur_atom_names = set()
+                    if pos in seen_positions:
+                        keep = False  # duplicate residue at this position
+                    else:
+                        keep = True
+                        seen_positions.add(pos)
+                prev_key = key
+                if keep:
+                    protein_lines.append(line)
+                    cur_atom_names.add(atom_name)
+            elif line.startswith("TER"):
                 protein_lines.append(line)
+                prev_key = None
+                cur_atom_names = set()
+                keep = True
             elif line.startswith(("HEADER", "TITLE", "REMARK", "CRYST1")):
                 protein_lines.append(line)
             # Skip HETATM, MODEL, ENDMDL — replaced by docked pose

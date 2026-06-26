@@ -42,6 +42,29 @@ log()      { echo "[$(date '+%H:%M:%S')] $*"; }
 log_warn() { echo "[$(date '+%H:%M:%S')] [WARN] $*" >&2; }
 log_err()  { echo "[$(date '+%H:%M:%S')] [ERROR] $*" >&2; }
 
+# Format integer seconds as HH:MM:SS
+fmt_duration() {
+    local s=$1
+    printf '%02d:%02d:%02d' $((s/3600)) $(((s%3600)/60)) $((s%60))
+}
+
+# eta_str DONE TOTAL START_EPOCH -> "elapsed=hh:mm:ss, ETA=hh:mm:ss, finish≈HH:MM:SS"
+# When DONE == 0 only elapsed is reported (can't extrapolate yet).
+eta_str() {
+    local done=$1 total=$2 start=$3
+    local now=$(date +%s)
+    local elapsed=$((now - start))
+    if [ "$done" -le 0 ] || [ "$total" -le 0 ]; then
+        echo "elapsed=$(fmt_duration $elapsed)"
+        return
+    fi
+    local remaining=$(( (elapsed * (total - done)) / done ))
+    local finish=$(date -d "+${remaining} seconds" '+%H:%M:%S' 2>/dev/null || echo "?")
+    echo "elapsed=$(fmt_duration $elapsed), ETA=$(fmt_duration $remaining), finish≈${finish}"
+}
+
+PIPELINE_START=$(date +%s)
+
 print_banner() {
     echo ""
     echo "╔══════════════════════════════════════════════╗"
@@ -188,8 +211,11 @@ mark_skipped() {
 # Activate dockndesign env (used for QC + selection)
 # ---------------------------------------------------------------------------
 
+# On Metacentrum, `conda` is set up by `module add mambaforge` (done by the
+# PBS wrapper before invoking this script), so the local conda.sh path may not
+# exist. Source it only when present.
 # shellcheck disable=SC1090
-source "$CONDA_PROFILE"
+[ -f "$CONDA_PROFILE" ] && source "$CONDA_PROFILE"
 conda activate "$ENV_DOCKNDESIGN"
 
 ###############################################################################
@@ -200,7 +226,12 @@ echo "----------------------------------------------"
 log "[1/3] Pose QC"
 echo "----------------------------------------------"
 
+QC_STEP_START=$(date +%s)
+QC_TOTAL=${#VALID_PDBS[@]}
+QC_IDX=0
+
 for pdb in "${VALID_PDBS[@]}"; do
+    QC_IDX=$((QC_IDX + 1))
     PDB_BASENAME=$(basename "$pdb" .pdb)
     PDB_DIR="$BASE_OUTPUT_DIR/$PDB_BASENAME"
     mkdir -p "$PDB_DIR"
@@ -265,6 +296,7 @@ for pdb in "${VALID_PDBS[@]}"; do
         PDB_QC_STATUS["$pdb"]="qc_crashed"
         ACTIVE_PDBS+=("$pdb")
     fi
+    log "  [progress] QC ${QC_IDX}/${QC_TOTAL}  $(eta_str "$QC_IDX" "$QC_TOTAL" "$QC_STEP_START")"
 done
 
 if [ ${#ACTIVE_PDBS[@]} -eq 0 ]; then
@@ -272,7 +304,7 @@ if [ ${#ACTIVE_PDBS[@]} -eq 0 ]; then
     exit 1
 fi
 
-log "  QC done: ${#ACTIVE_PDBS[@]} active, ${#SKIPPED_PDBS[@]} skipped."
+log "  QC done: ${#ACTIVE_PDBS[@]} active, ${#SKIPPED_PDBS[@]} skipped. (step elapsed: $(fmt_duration $(( $(date +%s) - QC_STEP_START )) ))"
 
 ###############################################################################
 # STEP 2: Residue Selection (reference-based)
@@ -286,6 +318,8 @@ echo ""
 echo "----------------------------------------------"
 log "[2/3] Residue Selection (reference complex → fixed set)"
 echo "----------------------------------------------"
+
+SEL_STEP_START=$(date +%s)
 
 # ---- 2a. Run selection on the reference complex ----------------------------
 
@@ -329,7 +363,12 @@ log "  Residue set: $REFERENCE_RESIDUES"
 # the fallback block below calls it normally and compares the output set to
 # the reference set to identify missing residues.
 
+CHK_TOTAL=${#ACTIVE_PDBS[@]}
+CHK_IDX=0
+CHK_LOOP_START=$(date +%s)
+
 for pdb in "${ACTIVE_PDBS[@]}"; do
+    CHK_IDX=$((CHK_IDX + 1))
     PDB_BASENAME=$(basename "$pdb" .pdb)
     PDB_DIR="$BASE_OUTPUT_DIR/$PDB_BASENAME"
     PDB_CHECK_FILE="$PDB_DIR/residues_in_box.txt"
@@ -391,6 +430,7 @@ for pdb in "${ACTIVE_PDBS[@]}"; do
 
     # The number of design positions is always the reference count.
     PDB_N_POSITIONS["$pdb"]="$REF_N_POS"
+    log "  [progress] box-check ${CHK_IDX}/${CHK_TOTAL}  $(eta_str "$CHK_IDX" "$CHK_TOTAL" "$CHK_LOOP_START")"
 done
 
 # Remove PDBs where the box-check hard-failed (flagged as skip-worthy)
@@ -407,7 +447,7 @@ if [ ${#ACTIVE_PDBS[@]} -eq 0 ]; then
     exit 1
 fi
 
-log "  Residue selection complete. All active PDBs will use $REF_N_POS reference position(s)."
+log "  Residue selection complete. All active PDBs will use $REF_N_POS reference position(s). (step elapsed: $(fmt_duration $(( $(date +%s) - SEL_STEP_START )) ))"
 
 ###############################################################################
 # STEP 3: LigandMPNN
@@ -453,6 +493,8 @@ REDESIGNED_JSON="$BASE_OUTPUT_DIR/redesigned_residues_multi.json"
 
 log "  Launching LigandMPNN on ${#ACTIVE_PDBS[@]} PDB(s) with reference residue set..."
 
+LMPNN_START=$(date +%s)
+
 python "$LMPNN_PATH/run.py" \
     --model_type           "$MODEL_TYPE" \
     --checkpoint_ligand_mpnn "$LMPNN_PATH/$CHECKPOINT" \
@@ -464,7 +506,7 @@ python "$LMPNN_PATH/run.py" \
     --redesigned_residues_multi "$REDESIGNED_JSON" \
     --save_stats 1
 
-log "  LigandMPNN done."
+log "  LigandMPNN done. (step elapsed: $(fmt_duration $(( $(date +%s) - LMPNN_START )) ))"
 
 ###############################################################################
 # STEP 4: Final Report
@@ -505,4 +547,5 @@ done
 echo ""
 log "Reference residues file -> $REF_RESIDUES_FILE"
 log "Report TSV              -> $REPORT_TSV"
+log "Total runtime: $(fmt_duration $(( $(date +%s) - PIPELINE_START )) )"
 log "All done. Results in: $BASE_OUTPUT_DIR"
