@@ -16,8 +16,8 @@ conda activate "$LMPNN_ENV"
 # Paths are overridable via env vars so the same script works locally and as a
 # PBS job-array slot (the wrapper exports these to point at /storage/brno2/...).
 LMPNN_PATH="${LMPNN_PATH:-/software/lmpnn/LigandMPNN}"
-BACKBONES_DIR="${BACKBONES_DIR:-/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/reference/output_reference_lmpnn/backbones}"
-OUT_FOLDER="${OUT_FOLDER:-/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/reference/output_reference_score/}"
+BACKBONES_DIR="${BACKBONES_DIR:-/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/ABL1/reference/output_reference_lmpnn/backbones}"
+OUT_FOLDER="${OUT_FOLDER:-/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/ABL1/reference/output_reference_score/}"
 
 # Job-array chunking. When submitted as a PBS array, the wrapper sets
 # CHUNK_SIZE and each slot processes PDBs in [array_idx*CHUNK_SIZE, +CHUNK_SIZE).

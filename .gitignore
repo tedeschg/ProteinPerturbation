@@ -1,9 +1,7 @@
-/data
-/output*
-/experiments
-/log*
+/data/dude-z_dataset/complexes
+/data/dude-z_dataset/ligands
+/data/dude-z_dataset/DOCKING_GRIDS_AND_POSES
 
-kl_*
-perturbation*
-roc*
+/experiments/dude-z_experiments
+
 METHODS.tex
