@@ -8,12 +8,12 @@ project_root: "/home/tedeschg/prj/protein-perturbation"
 lmpnn_path: "/software/lmpnn/LigandMPNN"
 env_dockndesign: "base"
 env_ligandmpnn: "ligandmpnn_env"
-output_dir: "/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/ABL1/reference/output_eval_lmpnn"
+output_dir: "/home/tedeschg/prj/protein-perturbation/experiments/dude-z_experiments/CSF1R/reference/output_reference_lmpnn"
 
 # --- Residue selection (docking‑box based) ---
 residues_selection:
   # Path to the reference complex (PDB) that contains the ligand
-  reference_complex: "/home/tedeschg/prj/protein-perturbation/data/dude-z_dataset/complexes/ABL1/reference/abl1_crystal.pdb"
+  reference_complex: "/home/tedeschg/prj/protein-perturbation/data/dude-z_dataset/complexes/CSF1R/reference/csf1r_crystal.pdb"
   # Docking box padding (Å), same as used in GNINA
   autobox_add: 8.0
   # Output file name (inside each PDB's subdirectory)
